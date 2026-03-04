@@ -1,0 +1,16 @@
+[Unit]
+Description=MIMOS Demo 4 — Equipment Tracking LED Controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/Desktop/mimos_demo_4
+ExecStart=/usr/bin/python3 -u equipment_tracker.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
