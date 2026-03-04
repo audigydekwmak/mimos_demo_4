@@ -5,6 +5,7 @@ import argparse
 import enum
 import json
 import math
+import signal
 import threading
 import time
 
@@ -74,6 +75,7 @@ flash_timer_end: float = 0.0         # monotonic time when flash expires
 bearer_last_seen: float = 0.0        # monotonic time when T2 was last in zone
 pixels = None
 mock_mode = False
+shutting_down = threading.Event()     # signals tick thread to stop cleanly
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +197,8 @@ def on_message(client, userdata, msg):
 
     raw_tag_id = payload.get("tag_id")
     event_type = payload.get("event_type", "")
-    zone_id = payload.get("data", {}).get("station", "")
+    data = payload.get("data", {})
+    zone_id = data.get("station", "") if isinstance(data, dict) else ""
 
     print(f"  [MQTT] tag={raw_tag_id} event={event_type} zone={zone_id}")
 
@@ -224,25 +227,29 @@ def tick_loop():
     flash_period = 1.0 / FLASH_HZ
     flash_elapsed = 0.0
 
-    while True:
+    while not shutting_down.is_set():
         time.sleep(TICK_INTERVAL)
         now = time.monotonic()
         dt = now - last
         last = now
 
-        # Update flash toggle
-        flash_elapsed += dt
-        if flash_elapsed >= flash_period / 2:
-            flash_on = not flash_on
-            flash_elapsed = 0.0
-
         with lock:
+            # Update flash toggle inside the lock so update_leds reads
+            # a consistent value
+            flash_elapsed += dt
+            if flash_elapsed >= flash_period / 2:
+                flash_on = not flash_on
+                flash_elapsed = 0.0
+
             # Check flash timer expiry
             if current_state in (ZoneState.FLASH_GREEN, ZoneState.FLASH_RED):
                 if now >= flash_timer_end:
                     current_state = compute_state_from_zone()
 
-            update_leds()
+            try:
+                update_leds()
+            except Exception as exc:
+                print(f"  [ERROR] LED update failed: {exc}")
 
             if mock_mode:
                 state_label = current_state.value
@@ -253,6 +260,15 @@ def tick_loop():
 
                 tags_str = ",".join(sorted(zone_tags)) if zone_tags else "(empty)"
                 print(f"\r  State: [{state_label:<13s}]  Zone: {tags_str}", end="", flush=True)
+
+    # Thread is stopping — turn LEDs off
+    try:
+        with lock:
+            pixels.fill(COLOR_OFF)
+            pixels.show()
+            print("LEDs cleared by tick thread")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +292,15 @@ def init_pixels(use_mock: bool):
         print(f"NeoPixel SPI initialized ({LED_TOTAL} LEDs, brightness={LED_BRIGHTNESS})")
 
 
+def shutdown(client):
+    """Clean shutdown: signal tick thread, wait for it to clear LEDs, then disconnect."""
+    print("\nShutting down...")
+    shutting_down.set()
+    # Give tick thread time to clear LEDs and exit
+    time.sleep(TICK_INTERVAL * 3)
+    client.disconnect()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Equipment tracking LED controller")
     parser.add_argument("--mock", action="store_true", help="Run without real LEDs")
@@ -287,8 +312,8 @@ def main():
     pixels.fill((0, 0, 0))
     pixels.show()
 
-    # Start background tick thread
-    tick_thread = threading.Thread(target=tick_loop, daemon=True)
+    # Start background tick thread (NOT daemon — we control its shutdown)
+    tick_thread = threading.Thread(target=tick_loop, daemon=False)
     tick_thread.start()
 
     # MQTT
@@ -296,20 +321,37 @@ def main():
     client.on_connect = on_connect
     client.on_message = on_message
 
-    print(f"Connecting to MQTT broker at {MQTT_HOST}:{MQTT_PORT} ...")
-    client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
+    # Handle both SIGINT (Ctrl+C) and SIGTERM (systemctl stop) cleanly
+    def handle_signal(signum, frame):
+        shutdown(client)
+
+    signal.signal(signal.SIGTERM, handle_signal)
 
     print("Equipment tracker running. Ctrl+C to quit.")
     print(f"Zone: {ZONE_NAME} ({ZONE_ID})")
     print(f"Equipment tag: {EQUIPMENT_TAG}, Bearer tag: {BEARER_TAG}")
     print(f"Known tags: {', '.join(f'{t}({r})' for t, r in sorted(TAGS.items()))}")
+
+    # Connect with retry — don't crash if broker is temporarily unreachable
+    while not shutting_down.is_set():
+        try:
+            print(f"Connecting to MQTT broker at {MQTT_HOST}:{MQTT_PORT} ...")
+            client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
+            break
+        except (OSError, TimeoutError) as exc:
+            print(f"  MQTT connect failed ({exc}), retrying in 5s...")
+            shutting_down.wait(timeout=5)
+
+    if shutting_down.is_set():
+        tick_thread.join(timeout=2)
+        return
+
     try:
         client.loop_forever()
     except KeyboardInterrupt:
-        print("\nShutting down...")
-        pixels.fill((0, 0, 0))
-        pixels.show()
-        client.disconnect()
+        shutdown(client)
+
+    tick_thread.join(timeout=2)
 
 
 if __name__ == "__main__":

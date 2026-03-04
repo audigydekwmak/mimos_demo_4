@@ -2,12 +2,40 @@
 """Debug script -- test LED colors and effects for the equipment tracking controller."""
 
 import math
+import subprocess
 import time
 
 import board
 import neopixel_spi as neopixel
 
 from config import LED_TOTAL, LED_BRIGHTNESS, PULSE_HZ, FLASH_HZ
+
+SERVICE_NAME = "mimos-demo4"
+
+
+def service_is_active() -> bool:
+    result = subprocess.run(
+        ["systemctl", "is-active", "--quiet", SERVICE_NAME],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def stop_service():
+    print(f"Stopping {SERVICE_NAME} service to avoid SPI bus contention...")
+    subprocess.run(["sudo", "systemctl", "stop", SERVICE_NAME], check=True)
+    time.sleep(0.3)
+
+
+def start_service():
+    print(f"Restarting {SERVICE_NAME} service...")
+    subprocess.run(["sudo", "systemctl", "start", SERVICE_NAME], check=True)
+
+
+# Stop the service if it's running so we have exclusive SPI access
+was_running = service_is_active()
+if was_running:
+    stop_service()
 
 spi = board.SPI()
 pixels = neopixel.NeoPixel_SPI(spi, LED_TOTAL, brightness=LED_BRIGHTNESS, auto_write=False)
@@ -86,3 +114,7 @@ except KeyboardInterrupt:
     print("\nInterrupted. LEDs off.")
     pixels.fill((0, 0, 0))
     pixels.show()
+
+finally:
+    if was_running:
+        start_service()
