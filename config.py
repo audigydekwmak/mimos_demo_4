@@ -4,6 +4,14 @@ MQTT_HOST = "192.168.0.183"
 MQTT_PORT = 1883
 MQTT_TOPIC = "tag/events"
 
+# Map hardware tag IDs to display IDs
+TAG_ALIASES = {
+    "C39D": "T1",
+    "4016": "T2",
+    "D85B": "T3",
+    "1C9E": "T4",
+}
+
 # Tags — role-based for equipment tracking
 # T1 = equipment, T2 = authorized bearer, T3/T4 = unauthorized
 TAGS = {
@@ -17,8 +25,8 @@ EQUIPMENT_TAG = "T1"
 BEARER_TAG = "T2"
 
 # Single zone
-ZONE_ID = "Demo4_zone_1"
-ZONE_NAME = "Equipment Zone"
+ZONE_ID = "Demo 4"
+ZONE_NAME = "Demo 4"
 
 # LED strip
 LED_TOTAL = 60
@@ -29,3 +37,4 @@ FLASH_HZ = 2.5           # Flashes per second (green/red flash)
 FLASH_DURATION = 5.0      # How long flash states last (seconds)
 PULSE_HZ = 0.5            # Breathing cycles per second
 TICK_INTERVAL = 0.05       # Update loop interval in seconds
+BEARER_GRACE = 1.0         # Seconds after T2 leaves to still count as "present"

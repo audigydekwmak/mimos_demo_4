@@ -11,6 +11,7 @@ import time
 import paho.mqtt.client as mqtt
 
 from config import (
+    BEARER_GRACE,
     BEARER_TAG,
     EQUIPMENT_TAG,
     FLASH_DURATION,
@@ -21,6 +22,7 @@ from config import (
     MQTT_PORT,
     MQTT_TOPIC,
     PULSE_HZ,
+    TAG_ALIASES,
     TAGS,
     TICK_INTERVAL,
     ZONE_ID,
@@ -69,6 +71,7 @@ zone_tags: set[str] = set()          # tags currently in the zone
 current_state: ZoneState = ZoneState.OFF
 flash_on: bool = False
 flash_timer_end: float = 0.0         # monotonic time when flash expires
+bearer_last_seen: float = 0.0        # monotonic time when T2 was last in zone
 pixels = None
 mock_mode = False
 
@@ -97,21 +100,33 @@ def compute_state_from_zone() -> ZoneState:
     return ZoneState.SOLID_YELLOW
 
 
+def bearer_present() -> bool:
+    """Check if bearer is in zone or left within the grace window."""
+    if BEARER_TAG in zone_tags:
+        return True
+    return (time.monotonic() - bearer_last_seen) < BEARER_GRACE
+
+
 def on_tag_event(tag_id: str, event_type: str):
     """Process a tag enter/leave and update state. Called with lock held."""
-    global current_state, flash_timer_end
+    global current_state, flash_timer_end, bearer_last_seen
 
     if event_type == "entered station":
         zone_tags.add(tag_id)
     elif event_type == "left station":
+        # Record when bearer leaves for grace window
+        if tag_id == BEARER_TAG:
+            bearer_last_seen = time.monotonic()
         zone_tags.discard(tag_id)
 
     # T1 leaving triggers flash logic
     if tag_id == EQUIPMENT_TAG and event_type == "left station":
-        if BEARER_TAG in zone_tags:
+        if bearer_present():
             current_state = ZoneState.FLASH_GREEN
+            print(f"  -> FLASH_GREEN (authorized checkout)")
         else:
             current_state = ZoneState.FLASH_RED
+            print(f"  -> FLASH_RED (unauthorized removal)")
         flash_timer_end = time.monotonic() + FLASH_DURATION
         return
 
@@ -167,19 +182,27 @@ def on_connect(client, userdata, flags, rc, properties=None):
     print(f"Subscribed to {MQTT_TOPIC}")
 
 
+def resolve_tag_id(raw_id: str) -> str:
+    """Map hardware tag ID to display ID (e.g. 'C39D' -> 'T1')."""
+    return TAG_ALIASES.get(raw_id, raw_id)
+
+
 def on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
     except (json.JSONDecodeError, UnicodeDecodeError):
         return
 
-    tag_id = payload.get("tag_id")
+    raw_tag_id = payload.get("tag_id")
     event_type = payload.get("event_type", "")
     zone_id = payload.get("data", {}).get("station", "")
 
-    if not tag_id or zone_id != ZONE_ID:
+    print(f"  [MQTT] tag={raw_tag_id} event={event_type} zone={zone_id}")
+
+    if not raw_tag_id or zone_id != ZONE_ID:
         return
 
+    tag_id = resolve_tag_id(raw_tag_id)
     tag_role = TAGS.get(tag_id, "unknown")
 
     with lock:
