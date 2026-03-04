@@ -1,6 +1,6 @@
 # MQTT
-# MQTT_HOST = "192.168.0.183"
-MQTT_HOST = "localhost"
+MQTT_HOST = "192.168.0.183"
+# MQTT_HOST = "localhost"
 MQTT_PORT = 1883
 MQTT_TOPIC = "tag/events"
 
