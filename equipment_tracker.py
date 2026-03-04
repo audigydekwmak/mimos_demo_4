@@ -244,16 +244,12 @@ def tick_loop():
 
             update_leds()
 
-        if mock_mode:
-            with lock:
+            if mock_mode:
                 state_label = current_state.value
-                if current_state == ZoneState.FLASH_GREEN:
-                    state_label = "FLASH_GREEN" if flash_on else "           "
-                elif current_state == ZoneState.FLASH_RED:
-                    state_label = "FLASH_RED" if flash_on else "         "
+                if current_state in (ZoneState.FLASH_GREEN, ZoneState.FLASH_RED):
+                    state_label = current_state.value if flash_on else ""
                 elif current_state == ZoneState.PULSE_YELLOW:
-                    b = pulse_brightness()
-                    state_label = f"PULSE({b:.0%})"
+                    state_label = f"PULSE({pulse_brightness():.0%})"
 
                 tags_str = ",".join(sorted(zone_tags)) if zone_tags else "(empty)"
                 print(f"\r  State: [{state_label:<13s}]  Zone: {tags_str}", end="", flush=True)
